@@ -50,6 +50,11 @@ const upload = multer({ storage });
 // ===== Google OAuth Client =====
 const client = new OAuth2Client(GOOGLE_CLIENT_ID);
 
+// ===== مسار رئيسي لتجنب خطأ 404 في UptimeRobot =====
+app.get('/', (req, res) => {
+    res.send('🚀 SYRI Chat Server is running!');
+});
+
 // ===== مصادقة التوكن =====
 const authenticateToken = (req, res, next) => {
     const authHeader = req.headers['authorization'];
