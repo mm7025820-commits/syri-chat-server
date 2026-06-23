@@ -159,20 +159,29 @@ app.post('/api/auth/register', async (req, res) => {
     }
 });
 
-// 3. تسجيل دخول المستخدم الموجود
+// 3. تسجيل دخول المستخدم الموجود (مع سجلات التصحيح)
 app.post('/api/auth/login', async (req, res) => {
     const { username, password } = req.body;
     try {
+        console.log('📩 Login attempt:', { username, password });
+        console.log('🔍 Searching for user in DB...');
+
         const result = await pool.query(
             'SELECT * FROM users WHERE username = $1',
             [username]
         );
+
+        console.log('👤 User found:', result.rows.length > 0 ? 'Yes' : 'No');
         if (result.rows.length === 0) {
             return res.status(401).json({ error: 'اسم مستخدم أو كلمة مرور خاطئة' });
         }
 
         const user = result.rows[0];
+        console.log('🔑 Stored hash:', user.password_hash);
+        console.log('🔄 Comparing passwords...');
         const match = await bcrypt.compare(password, user.password_hash);
+        console.log('✅ Match result:', match);
+
         if (!match) {
             return res.status(401).json({ error: 'اسم مستخدم أو كلمة مرور خاطئة' });
         }
