@@ -31,6 +31,7 @@ const pool = new Pool({
 
 app.use(cors());
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 // ===== إنشاء مجلد uploads إذا لم يكن موجوداً =====
 const uploadDir = './uploads';
@@ -161,9 +162,12 @@ app.post('/api/auth/register', async (req, res) => {
 
 // 3. تسجيل دخول المستخدم الموجود (مع سجلات التصحيح)
 app.post('/api/auth/login', async (req, res) => {
+    console.log('📩 Request body received:', req.body);
     const { username, password } = req.body;
+    
+    console.log('📩 Login attempt:', { username, password });
+    
     try {
-        console.log('📩 Login attempt:', { username, password });
         console.log('🔍 Searching for user in DB...');
 
         const result = await pool.query(
@@ -172,6 +176,7 @@ app.post('/api/auth/login', async (req, res) => {
         );
 
         console.log('👤 User found:', result.rows.length > 0 ? 'Yes' : 'No');
+        
         if (result.rows.length === 0) {
             return res.status(401).json({ error: 'اسم مستخدم أو كلمة مرور خاطئة' });
         }
