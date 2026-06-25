@@ -160,23 +160,22 @@ app.post('/api/auth/register', async (req, res) => {
     }
 });
 
-// 3. تسجيل دخول المستخدم الموجود (مع سجلات التصحيح)
+// 3. تسجيل دخول المستخدم الموجود (مع سجلات تصحيح كاملة)
 app.post('/api/auth/login', async (req, res) => {
     console.log('📩 Request body received:', req.body);
     const { username, password } = req.body;
-    
     console.log('📩 Login attempt:', { username, password });
-    
+    console.log('📝 Input password length:', password ? password.length : 'undefined');
+    console.log('📝 Input password chars:', JSON.stringify(password));
+
     try {
         console.log('🔍 Searching for user in DB...');
-
         const result = await pool.query(
             'SELECT * FROM users WHERE username = $1',
             [username]
         );
-
         console.log('👤 User found:', result.rows.length > 0 ? 'Yes' : 'No');
-        
+
         if (result.rows.length === 0) {
             return res.status(401).json({ error: 'اسم مستخدم أو كلمة مرور خاطئة' });
         }
