@@ -33,13 +33,16 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// ===== إنشاء مجلد uploads إذا لم يكن موجوداً =====
+// ===== تخزين OTP مؤقت (في الذاكرة) =====
+const otpStore = {};
+
+// ===== إنشاء مجلد uploads =====
 const uploadDir = './uploads';
 if (!fs.existsSync(uploadDir)) {
     fs.mkdirSync(uploadDir);
 }
 
-// ===== Multer لاستقبال الملفات =====
+// ===== Multer =====
 const storage = multer.diskStorage({
     destination: uploadDir,
     filename: (req, file, cb) => {
@@ -51,7 +54,7 @@ const upload = multer({ storage });
 // ===== Google OAuth Client =====
 const client = new OAuth2Client(GOOGLE_CLIENT_ID);
 
-// ===== مسار رئيسي لتجنب خطأ 404 في UptimeRobot =====
+// ===== مسار رئيسي =====
 app.get('/', (req, res) => {
     res.send('🚀 SYRI Chat Server is running!');
 });
@@ -68,7 +71,9 @@ const authenticateToken = (req, res, next) => {
     });
 };
 
+// ============================================================
 // ===== نقاط النهاية (Endpoints) =====
+// ============================================================
 
 // 1. تسجيل الدخول عبر جوجل
 app.post('/api/auth/google', async (req, res) => {
@@ -111,7 +116,7 @@ app.post('/api/auth/google', async (req, res) => {
 
 // 2. تسجيل مستخدم جديد
 app.post('/api/auth/register', async (req, res) => {
-    const { googleId, email, displayName, username, password, avatarUrl } = req.body;
+    const { googleId, email, displayName, username, password, avatarUrl, phone } = req.body;
     try {
         const check = await pool.query(
             'SELECT id FROM users WHERE username = $1',
@@ -125,10 +130,10 @@ app.post('/api/auth/register', async (req, res) => {
 
         const result = await pool.query(
             `INSERT INTO users 
-             (google_id, email, display_name, username, password_hash, avatar_url) 
-             VALUES ($1, $2, $3, $4, $5, $6) 
+             (google_id, email, display_name, username, password_hash, avatar_url, phone) 
+             VALUES ($1, $2, $3, $4, $5, $6, $7) 
              RETURNING id, username, display_name, avatar_url, email`,
-            [googleId, email, displayName, username, hashedPassword, avatarUrl]
+            [googleId || null, email, displayName, username, hashedPassword, avatarUrl || null, phone || null]
         );
 
         const user = result.rows[0];
@@ -160,32 +165,20 @@ app.post('/api/auth/register', async (req, res) => {
     }
 });
 
-// 3. تسجيل دخول المستخدم الموجود (مع سجلات تصحيح كاملة)
+// 3. تسجيل دخول المستخدم الموجود
 app.post('/api/auth/login', async (req, res) => {
-    console.log('📩 Request body received:', req.body);
     const { username, password } = req.body;
-    console.log('📩 Login attempt:', { username, password });
-    console.log('📝 Input password length:', password ? password.length : 'undefined');
-    console.log('📝 Input password chars:', JSON.stringify(password));
-
     try {
-        console.log('🔍 Searching for user in DB...');
         const result = await pool.query(
             'SELECT * FROM users WHERE username = $1',
             [username]
         );
-        console.log('👤 User found:', result.rows.length > 0 ? 'Yes' : 'No');
-
         if (result.rows.length === 0) {
             return res.status(401).json({ error: 'اسم مستخدم أو كلمة مرور خاطئة' });
         }
 
         const user = result.rows[0];
-        console.log('🔑 Stored hash:', user.password_hash);
-        console.log('🔄 Comparing passwords...');
         const match = await bcrypt.compare(password, user.password_hash);
-        console.log('✅ Match result:', match);
-
         if (!match) {
             return res.status(401).json({ error: 'اسم مستخدم أو كلمة مرور خاطئة' });
         }
@@ -227,7 +220,34 @@ app.post('/api/auth/login', async (req, res) => {
     }
 });
 
-// 4. رفع الملفات
+// 4. إرسال رمز التحقق (OTP)
+app.post('/api/auth/send-otp', async (req, res) => {
+    const { phone } = req.body;
+    if (!phone) {
+        return res.status(400).json({ error: 'رقم الهاتف مطلوب' });
+    }
+    const otp = Math.floor(100000 + Math.random() * 900000);
+    otpStore[phone] = otp.toString();
+    console.log(`📱 OTP for ${phone}: ${otp}`);
+    res.json({ success: true, otp: otp.toString() });
+});
+
+// 5. التحقق من رمز OTP
+app.post('/api/auth/verify-otp', async (req, res) => {
+    const { phone, otp } = req.body;
+    if (!phone || !otp) {
+        return res.status(400).json({ error: 'رقم الهاتف والرمز مطلوبان' });
+    }
+    const storedOtp = otpStore[phone];
+    if (storedOtp && storedOtp === otp) {
+        delete otpStore[phone];
+        res.json({ success: true });
+    } else {
+        res.status(400).json({ error: 'رمز غير صحيح' });
+    }
+});
+
+// 6. رفع الملفات
 app.post('/api/upload', authenticateToken, upload.single('file'), (req, res) => {
     if (!req.file) {
         return res.status(400).json({ error: 'لم يتم رفع أي ملف' });
@@ -237,10 +257,9 @@ app.post('/api/upload', authenticateToken, upload.single('file'), (req, res) => 
     res.json({ success: true, fileUrl });
 });
 
-// خدمة الملفات المرفوعة
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
-// 5. البحث عن مستخدمين
+// 7. البحث عن مستخدمين
 app.get('/api/users/search', authenticateToken, async (req, res) => {
     const { q } = req.query;
     try {
@@ -258,7 +277,24 @@ app.get('/api/users/search', authenticateToken, async (req, res) => {
     }
 });
 
-// 6. تحديث حالة الاتصال
+// 8. التحقق من توفر اسم المستخدم
+app.get('/api/users/check-username', async (req, res) => {
+    const { username } = req.query;
+    if (!username) {
+        return res.status(400).json({ error: 'اسم المستخدم مطلوب' });
+    }
+    try {
+        const result = await pool.query(
+            'SELECT id FROM users WHERE username = $1',
+            [username]
+        );
+        res.json({ available: result.rows.length === 0 });
+    } catch (error) {
+        res.status(500).json({ error: 'فشل التحقق' });
+    }
+});
+
+// 9. تحديث حالة الاتصال
 app.post('/api/users/status', authenticateToken, async (req, res) => {
     const { isOnline } = req.body;
     try {
@@ -273,7 +309,7 @@ app.post('/api/users/status', authenticateToken, async (req, res) => {
     }
 });
 
-// 7. جلب المحادثات الكاملة بين مستخدمين
+// 10. جلب المحادثات الكاملة بين مستخدمين
 app.get('/api/messages/:userId', authenticateToken, async (req, res) => {
     const otherUserId = req.params.userId;
     const myId = req.user.userId;
@@ -292,7 +328,7 @@ app.get('/api/messages/:userId', authenticateToken, async (req, res) => {
     }
 });
 
-// ===== WebSocket للتراسل الفوري =====
+// ===== WebSocket =====
 const clients = new Map();
 
 wss.on('connection', (ws, req) => {
@@ -306,9 +342,7 @@ wss.on('connection', (ws, req) => {
                 const userId = decoded.userId;
                 clients.set(userId, ws);
                 ws.userId = userId;
-
                 broadcastStatus(userId, true);
-
                 const unread = await pool.query(
                     `SELECT * FROM messages 
                      WHERE receiver_id = $1 AND is_read = false`,
@@ -323,7 +357,6 @@ wss.on('connection', (ws, req) => {
             if (data.type === 'message') {
                 const { receiverId, content, messageType, fileUrl } = data;
                 const senderId = ws.userId;
-
                 const result = await pool.query(
                     `INSERT INTO messages 
                      (sender_id, receiver_id, content, message_type, file_url) 
@@ -331,7 +364,6 @@ wss.on('connection', (ws, req) => {
                      RETURNING id, sent_at`,
                     [senderId, receiverId, content, messageType || 'text', fileUrl || null]
                 );
-
                 const newMessage = {
                     id: result.rows[0].id,
                     sender_id: senderId,
@@ -342,7 +374,6 @@ wss.on('connection', (ws, req) => {
                     sent_at: result.rows[0].sent_at,
                     is_read: false
                 };
-
                 const receiverWs = clients.get(receiverId);
                 if (receiverWs && receiverWs.readyState === WebSocket.OPEN) {
                     receiverWs.send(JSON.stringify({
@@ -350,7 +381,6 @@ wss.on('connection', (ws, req) => {
                         message: newMessage
                     }));
                 }
-
                 ws.send(JSON.stringify({
                     type: 'message_sent',
                     message: newMessage
@@ -406,7 +436,6 @@ async function broadcastStatus(userId, isOnline) {
              WHERE sender_id = $1 OR receiver_id = $1`,
             [userId]
         );
-
         for (const row of friends.rows) {
             const friendWs = clients.get(row.friend_id);
             if (friendWs && friendWs.readyState === WebSocket.OPEN) {
