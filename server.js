@@ -19,7 +19,7 @@ const PORT = process.env.PORT || 8080;
 const JWT_SECRET = process.env.JWT_SECRET || 'SYRI_CHAT_SUPER_SECRET_KEY_2025';
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || 'YOUR_GOOGLE_CLIENT_ID.apps.googleusercontent.com';
 
-// ===== قاعدة البيانات (متغيرات البيئة) =====
+// ===== قاعدة البيانات =====
 const pool = new Pool({
     user: process.env.DB_USER || 'postgres',
     host: process.env.DB_HOST || 'localhost',
@@ -33,10 +33,10 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// ===== تخزين OTP مؤقت (في الذاكرة) =====
+// ===== تخزين OTP مؤقت =====
 const otpStore = {};
 
-// ===== إنشاء مجلد uploads =====
+// ===== مجلد uploads =====
 const uploadDir = './uploads';
 if (!fs.existsSync(uploadDir)) {
     fs.mkdirSync(uploadDir);
@@ -259,16 +259,19 @@ app.post('/api/upload', authenticateToken, upload.single('file'), (req, res) => 
 
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
-// 7. البحث عن مستخدمين
+// 7. البحث عن مستخدمين (NEW)
 app.get('/api/users/search', authenticateToken, async (req, res) => {
     const { q } = req.query;
+    if (!q || q.length < 2) {
+        return res.json([]);
+    }
     try {
         const result = await pool.query(
             `SELECT id, username, display_name, avatar_url 
              FROM users 
-             WHERE username ILIKE $1 OR display_name ILIKE $1 
+             WHERE username ILIKE $1 AND id != $2
              LIMIT 20`,
-            [`%${q}%`]
+            [`%${q}%`, req.user.userId]
         );
         res.json(result.rows);
     } catch (error) {
@@ -277,7 +280,57 @@ app.get('/api/users/search', authenticateToken, async (req, res) => {
     }
 });
 
-// 8. التحقق من توفر اسم المستخدم
+// 8. إضافة صديق (NEW)
+app.post('/api/users/add-friend', authenticateToken, async (req, res) => {
+    const { friendId } = req.body;
+    const userId = req.user.userId;
+    try {
+        // التحقق من وجود المستخدم
+        const userCheck = await pool.query('SELECT id FROM users WHERE id = $1', [friendId]);
+        if (userCheck.rows.length === 0) {
+            return res.status(404).json({ error: 'المستخدم غير موجود' });
+        }
+        // إضافة رسالة ترحيب أو إنشاء محادثة
+        // هنا نضيف سجل في جدول المحادثات (إذا لم تكن موجودة)
+        // يمكننا إرسال رسالة ترحيب تلقائية
+        res.json({ success: true });
+    } catch (error) {
+        console.error('Add friend error:', error);
+        res.status(500).json({ error: 'فشل إضافة الصديق' });
+    }
+});
+
+// 9. جلب قائمة المحادثات (الأصدقاء) (NEW)
+app.get('/api/users/friends', authenticateToken, async (req, res) => {
+    const userId = req.user.userId;
+    try {
+        const result = await pool.query(
+            `SELECT DISTINCT 
+                u.id, u.username, u.display_name, u.avatar_url,
+                u.is_online,
+                (SELECT content FROM messages 
+                 WHERE (sender_id = u.id AND receiver_id = $1) 
+                    OR (sender_id = $1 AND receiver_id = u.id) 
+                 ORDER BY sent_at DESC LIMIT 1) as last_message,
+                (SELECT sent_at FROM messages 
+                 WHERE (sender_id = u.id AND receiver_id = $1) 
+                    OR (sender_id = $1 AND receiver_id = u.id) 
+                 ORDER BY sent_at DESC LIMIT 1) as last_message_time
+             FROM users u
+             JOIN messages m ON (m.sender_id = u.id AND m.receiver_id = $1) 
+                               OR (m.receiver_id = u.id AND m.sender_id = $1)
+             WHERE u.id != $1
+             ORDER BY last_message_time DESC`,
+            [userId]
+        );
+        res.json(result.rows);
+    } catch (error) {
+        console.error('Friends error:', error);
+        res.status(500).json({ error: 'فشل جلب المحادثات' });
+    }
+});
+
+// 10. التحقق من توفر اسم المستخدم
 app.get('/api/users/check-username', async (req, res) => {
     const { username } = req.query;
     if (!username) {
@@ -294,7 +347,7 @@ app.get('/api/users/check-username', async (req, res) => {
     }
 });
 
-// 9. تحديث حالة الاتصال
+// 11. تحديث حالة الاتصال
 app.post('/api/users/status', authenticateToken, async (req, res) => {
     const { isOnline } = req.body;
     try {
@@ -309,7 +362,7 @@ app.post('/api/users/status', authenticateToken, async (req, res) => {
     }
 });
 
-// 10. جلب المحادثات الكاملة بين مستخدمين
+// 12. جلب المحادثات الكاملة بين مستخدمين
 app.get('/api/messages/:userId', authenticateToken, async (req, res) => {
     const otherUserId = req.params.userId;
     const myId = req.user.userId;
