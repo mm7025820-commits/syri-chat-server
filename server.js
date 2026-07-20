@@ -75,10 +75,15 @@ const authenticateToken = (req, res, next) => {
 // ===== نقاط النهاية (Endpoints) =====
 // ============================================================
 
-// 1. تسجيل الدخول عبر جوجل
+// 1. تسجيل الدخول عبر جوجل (Google Sign-In) 🔥
 app.post('/api/auth/google', async (req, res) => {
     const { idToken } = req.body;
+    if (!idToken) {
+        return res.status(400).json({ error: 'ID Token مطلوب' });
+    }
+
     try {
+        // التحقق من التوكن مع Google
         const ticket = await client.verifyIdToken({
             idToken,
             audience: GOOGLE_CLIENT_ID,
@@ -89,23 +94,71 @@ app.post('/api/auth/google', async (req, res) => {
         const name = payload['name'];
         const picture = payload['picture'];
 
+        // البحث عن المستخدم في قاعدة البيانات
         const result = await pool.query(
             'SELECT * FROM users WHERE google_id = $1',
             [googleId]
         );
 
         if (result.rows.length > 0) {
+            // مستخدم موجود → تسجيل دخول
             const user = result.rows[0];
+            const token = jwt.sign(
+                { userId: user.id, username: user.username },
+                JWT_SECRET,
+                { expiresIn: '30d' }
+            );
             return res.json({
                 status: 'exists',
                 usernameHint: user.username,
                 displayName: user.display_name,
-                avatar: user.avatar_url
+                avatar: user.avatar_url,
+                token: token
             });
         } else {
+            // مستخدم جديد → إنشاء حساب تلقائياً
+            const newUsername = email.split('@')[0] + '_google';
+            // التحقق من عدم تكرار اسم المستخدم
+            const checkUser = await pool.query(
+                'SELECT id FROM users WHERE username = $1',
+                [newUsername]
+            );
+            let finalUsername = newUsername;
+            if (checkUser.rows.length > 0) {
+                finalUsername = newUsername + '_' + Date.now().toString().slice(-4);
+            }
+
+            // إنشاء كلمة مرور عشوائية مشفرة (لن يستخدمها المستخدم)
+            const randomPassword = Math.random().toString(36).slice(-8);
+            const hashedPassword = await bcrypt.hash(randomPassword, 10);
+
+            const insertResult = await pool.query(
+                `INSERT INTO users 
+                 (google_id, email, display_name, username, password_hash, avatar_url) 
+                 VALUES ($1, $2, $3, $4, $5, $6) 
+                 RETURNING id, username, display_name, avatar_url`,
+                [googleId, email, name, finalUsername, hashedPassword, picture || null]
+            );
+
+            const user = insertResult.rows[0];
+            const token = jwt.sign(
+                { userId: user.id, username: user.username },
+                JWT_SECRET,
+                { expiresIn: '30d' }
+            );
+
+            // إنشاء إعدادات افتراضية
+            await pool.query(
+                'INSERT INTO user_settings (user_id) VALUES ($1)',
+                [user.id]
+            );
+
             return res.json({
-                status: 'new',
-                googleData: { googleId, email, name, picture }
+                status: 'exists',
+                usernameHint: user.username,
+                displayName: user.display_name,
+                avatar: user.avatar_url,
+                token: token
             });
         }
     } catch (error) {
@@ -259,7 +312,7 @@ app.post('/api/upload', authenticateToken, upload.single('file'), (req, res) => 
 
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
-// 7. البحث عن مستخدمين (NEW)
+// 7. البحث عن مستخدمين
 app.get('/api/users/search', authenticateToken, async (req, res) => {
     const { q } = req.query;
     if (!q || q.length < 2) {
@@ -280,19 +333,15 @@ app.get('/api/users/search', authenticateToken, async (req, res) => {
     }
 });
 
-// 8. إضافة صديق (NEW)
+// 8. إضافة صديق
 app.post('/api/users/add-friend', authenticateToken, async (req, res) => {
     const { friendId } = req.body;
     const userId = req.user.userId;
     try {
-        // التحقق من وجود المستخدم
         const userCheck = await pool.query('SELECT id FROM users WHERE id = $1', [friendId]);
         if (userCheck.rows.length === 0) {
             return res.status(404).json({ error: 'المستخدم غير موجود' });
         }
-        // إضافة رسالة ترحيب أو إنشاء محادثة
-        // هنا نضيف سجل في جدول المحادثات (إذا لم تكن موجودة)
-        // يمكننا إرسال رسالة ترحيب تلقائية
         res.json({ success: true });
     } catch (error) {
         console.error('Add friend error:', error);
@@ -300,7 +349,7 @@ app.post('/api/users/add-friend', authenticateToken, async (req, res) => {
     }
 });
 
-// 9. جلب قائمة المحادثات (الأصدقاء) (NEW)
+// 9. جلب قائمة المحادثات (الأصدقاء)
 app.get('/api/users/friends', authenticateToken, async (req, res) => {
     const userId = req.user.userId;
     try {
